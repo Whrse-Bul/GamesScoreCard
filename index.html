@@ -175,6 +175,24 @@ body[data-view="games"] main{max-width:1500px;padding-bottom:1.5rem}
 .game-tile strong{font-size:clamp(1.35rem,2.7vw,2.5rem);line-height:1.15}
 @media(max-width:899px){.game-tile{flex-basis:calc((100% - 1rem)/2)}}
 @media(max-width:660px){.game-tiles{min-height:0}.game-tile{flex-basis:100%;min-height:6.5rem}}
+
+/* ---- Tiebreak tracker ---- */
+.tb-teams{display:flex;flex-wrap:wrap;gap:.4rem 1.2rem;margin:.8rem 0}
+.tb-teams label{display:flex;align-items:center;gap:.5rem;margin:0}
+.tb-teams input{width:auto}
+.tb-add{display:flex;flex-wrap:wrap;gap:.8rem;align-items:flex-end;margin:.8rem 0}
+.tb-add label{flex:1 1 9rem;margin:0}
+.tb-duels{margin:.5rem 0 1rem;padding-left:1.3rem;color:var(--soft)}
+.tb-duels li{margin:.3rem 0}
+.tb-duels button{margin-left:.6rem;padding:.2rem .55rem;font-size:.85rem}
+.tb-note{color:var(--gold);margin:.6rem 0}
+button:disabled{opacity:.5;cursor:not-allowed}
+
+.tb-alert{border-color:var(--gold)}
+.tb-alert h2{color:var(--gold);margin-bottom:.4rem}
+.tb-alert p{margin:.5rem 0}
+.tb-alert button{margin-left:.5rem}
+.score-matrix tr.tie-row th{color:var(--gold)}
 </style>
 
 </head>
@@ -214,7 +232,7 @@ const stations = [
 const key = "christmas-countdown-event-v1";
 const main = document.querySelector("#main");
 const printArea = document.querySelector("#print");
-const empty = () => ({ pinHash:"", records:{}, overall:{}, live:null });
+const empty = () => ({ pinHash:"", records:{}, overall:{}, live:null, tiebreaks:{} });
 function load() {
   try { return {...empty(),...(JSON.parse(localStorage.getItem(key)) ?? {})}; }
   catch { return empty(); }
@@ -257,9 +275,14 @@ function standings() {
   const results=games.map(g=>data.records[g.id]?.published?scoreGame(g):null);
   const rows=teams.map((name,i)=>{
     const scores=results.map(r=>r?.find(x=>x.team===i)?.points ?? null);
-    return {team:i,name,scores,total:scores.reduce((sum,n)=>sum+(n??0),0)};
+    const base=scores.reduce((sum,n)=>sum+(n??0),0);
+    return {team:i,name,scores,base,tb:null,total:base};
   });
   const finished=results.filter(Boolean).length;
+  if(finished===games.length){
+    const bonus=tiebreakBonus(rows);
+    rows.forEach(r=>{r.tb=bonus[r.team];r.total=r.base+(typeof r.tb==="number"?r.tb:0);});
+  }
   let place=1;
   return {finished,rows:groups(rows,r=>r.total,true).flatMap(group=>{
     const tied=group.length>1;
@@ -371,9 +394,10 @@ function crest(team) {
 }
 function boardTable(board=standings()) {
   const columns=teams.map((name,team)=>board.rows.find(row=>row.team===team));
+  const tieRow=board.rows.some(r=>r.tb!==null)?`<tr class="tie-row"><th scope="row">Guess the Name tiebreak</th>${columns.map(r=>r.tb===null?'<td class="pending">—</td>':r.tb==="pending"?'<td class="pending">Pending</td>':`<td>${r.tb}</td>`).join("")}</tr>`:"";
   return `<div class="table-wrap"><table class="score-matrix">
     <thead><tr><th scope="col">Game</th>${columns.map(r=>`<th scope="col">${crest(r.team)}<span class="team-label">${r.name}</span></th>`).join("")}</tr></thead>
-    <tbody>${games.map((game,i)=>`<tr><th scope="row">${game.name}</th>${columns.map(r=>r.scores[i]===null?'<td class="pending">Pending</td>':`<td>${r.scores[i]}</td>`).join("")}</tr>`).join("")}</tbody>
+    <tbody>${games.map((game,i)=>`<tr><th scope="row">${game.name}</th>${columns.map(r=>r.scores[i]===null?'<td class="pending">Pending</td>':`<td>${r.scores[i]}</td>`).join("")}</tr>`).join("")}${tieRow}</tbody>
     <tfoot><tr><th scope="row">Total / 100</th>${columns.map(r=>`<td class="total">${r.total}</td>`).join("")}</tr></tfoot>
   </table></div>`;
 }
@@ -408,7 +432,8 @@ function renderAdmin(gameIndex=0) {
   <form id="tabulate" data-index="${gameIndex}"><div class="grid">
   ${teams.map((name,i)=>`<fieldset><legend>${name}</legend><label>Points<select required name="award${i}"><option value="">Select points</option>${points.map((value,rank)=>`<option value="${value}" ${(record?.awards?.[i]??result?.find(row=>row.team===i)?.points)===value?"selected":""}>${value} · ${["1st","2nd","3rd","4th"][rank]}</option>`).join("")}</select></label></fieldset>`).join("")}</div>
   <button class="primary">Publish game result</button></form><p id="status" class="status" role="status"></p>
-  <details class="panel"><summary>Guess the Name tiebreak</summary><p>Two reps face each other with a cloth between them. Drop the cloth on the countdown. First correct first name or agreed nickname wins the point. Best of three with fresh pairs. For three or four tied teams, use round-robin duels and rank by wins. Use the tiebreak result to assign the game points.</p></details>
+  <div id="tb-alert">${tieAlert()}</div>
+  <details class="panel" id="tb-details"><summary>Guess the Name tiebreak</summary><p>Two reps face each other with a cloth between them. Drop the cloth on the countdown. First correct first name or agreed nickname wins the point. Best of three with fresh pairs. For three or four tied teams, use round-robin duels and rank by wins. Use the tiebreak result to assign the game points.</p><div id="tiebreak" class="tb">${tiebreakInner(gameIndex)}</div></details>
   ${overallForm()}`;
 }
 function overallForm(){
@@ -441,12 +466,12 @@ function printTabulation(kind) {
     return `<section class="print-round"><h2>${i+1}. ${g.name}</h2><table><thead><tr><th>Team</th><th>Place</th><th>Points</th></tr></thead><tbody>
     ${teams.map((team,j)=>{const r=results?.find(x=>x.team===j);return `<tr><td>${team}</td><td>${r?.rank??""}</td><td>${r?.points??""}</td></tr>`;}).join("")}</tbody></table></section>`;
   }).join("")}
-  <section class="print-round"><h2>Guess the Name tiebreak record</h2><table><thead><tr><th>Game / Overall</th><th>Teams</th><th>Duel results / final order</th><th>Marshal</th></tr></thead><tbody><tr><td>&nbsp;</td><td></td><td></td><td></td></tr><tr><td>&nbsp;</td><td></td><td></td><td></td></tr></tbody></table></section>`;
+  <section class="print-round"><h2>Guess the Name tiebreak record</h2><table><thead><tr><th>Game / Overall</th><th>Teams</th><th>Duel results / final order</th><th>Marshal</th></tr></thead><tbody>${tiebreakPrintRows(blank)}</tbody></table></section>`;
   window.print();
 }
 function downloadCSV() {
-  const list=[["Overall rank","Team",...games.map(g=>g.name),"Total / 100"]];
-  for(const r of standings().rows)list.push([r.rank,r.name,...r.scores,r.total]);
+  const list=[["Overall rank","Team",...games.map(g=>g.name),"Guess the Name tiebreak","Total / 100"]];
+  for(const r of standings().rows)list.push([r.rank,r.name,...r.scores,r.tb===null?"":r.tb,r.total]);
   list.push([],["Game","Team","Place","Points"]);
   for(const g of games){
     const results=data.records[g.id]?.published?scoreGame(g):null;
@@ -545,6 +570,139 @@ function stopPresent() {
 document.addEventListener("fullscreenchange",()=>{if(presenting&&!document.fullscreenElement)stopPresent();});
 document.addEventListener("keydown",event=>{if(event.key==="Escape")stopPresent();});
 document.addEventListener("visibilitychange",()=>{if(presenting&&document.visibilityState==="visible")holdScreen();});
+/* ---- Tiebreak duel tracker ---- */
+let tbCtx=null;
+function tiebreakBonus(rows) {
+  const out=teams.map(()=>null);
+  groups(rows,r=>r.base,true).filter(gp=>gp.length>1).forEach(gp=>{
+    const ids=gp.map(r=>r.team);
+    const res=tiebreakOrder(ids,data.tiebreaks?.["overall:"+gp[0].base]?.duels);
+    if(!res.valid.length)return;
+    if(!res.resolved){ids.forEach(t=>{out[t]="pending";});return;}
+    res.order.forEach((t,i)=>{out[t]=ids.length-1-i;});
+  });
+  return out;
+}
+function tiebreakContexts(gameIndex) {
+  const g=games[gameIndex];
+  const list=[{id:"game:"+g.id,label:"Round "+(gameIndex+1)+": "+g.name+" result"}];
+  const board=standings();
+  if(board.finished===games.length){
+    groups(board.rows,r=>r.base,true).filter(x=>x.length>1).forEach(grp=>{
+      list.push({id:"overall:"+grp[0].base,label:"Overall tie at "+grp[0].base+" points",teams:grp.map(r=>r.team)});
+    });
+  }
+  return list;
+}
+function tiebreakOrder(tied,duels) {
+  const valid=(duels||[]).filter(d=>tied.includes(d.w)&&tied.includes(d.l));
+  const wins=Object.fromEntries(tied.map(t=>[t,0]));
+  valid.forEach(d=>{wins[d.w]++;});
+  const ranked=groups(tied.map(t=>({team:t,wins:wins[t]})),r=>r.wins,true);
+  return {valid,wins,ranked,resolved:ranked.every(gp=>gp.length===1),order:ranked.flat().map(r=>r.team)};
+}
+function tiebreakInner(gameIndex) {
+  const ctxs=tiebreakContexts(gameIndex);
+  if(!ctxs.some(c=>c.id===tbCtx))tbCtx=ctxs[0].id;
+  const ctx=ctxs.find(c=>c.id===tbCtx);
+  const saved=data.tiebreaks?.[ctx.id]??{teams:[],place:0,duels:[]};
+  const tied=ctx.teams??saved.teams;
+  const maxPlace=Math.max(0,teams.length-tied.length);
+  const place=Math.min(saved.place??0,maxPlace);
+  const result=tiebreakOrder(tied,saved.duels);
+  const name=t=>esc(teams[t]);
+  const picker=ctxs.length>1?`<label>Tiebreak for<select id="tb-context">${ctxs.map(c=>`<option value="${c.id}" ${c.id===ctx.id?"selected":""}>${esc(c.label)}</option>`).join("")}</select></label>`:"";
+  const setup=ctx.teams
+    ?`<p>${tied.map(name).join(", ")} are tied. Their points stay the same; only the order changes.</p>`
+    :`<fieldset class="tb-teams"><legend>Tied teams</legend>${teams.map((n,t)=>`<label><input type="checkbox" class="tb-team" value="${t}" ${tied.includes(t)?"checked":""}>${esc(n)}</label>`).join("")}</fieldset>${tied.length>=2?`<label>They are tied for<select id="tb-place">${Array.from({length:maxPlace+1},(_,p)=>`<option value="${p}" ${p===place?"selected":""}>${ordinal(p+1)} place (${points.slice(p,p+tied.length).join(", ")} points)</option>`).join("")}</select></label>`:"<p>Select at least two tied teams to start.</p>"}`;
+  if(tied.length<2)return picker+setup;
+  const add=`<div class="tb-add"><label>Winner<select id="tb-winner">${tied.map(t=>`<option value="${t}">${name(t)}</option>`).join("")}</select></label><label>Loser<select id="tb-loser">${tied.map((t,i)=>`<option value="${t}" ${i===1?"selected":""}>${name(t)}</option>`).join("")}</select></label><button class="primary" data-tb-add>Add duel</button></div>`;
+  const list=(saved.duels||[]).map((d,i)=>[d,i]).filter(([d])=>tied.includes(d.w)&&tied.includes(d.l));
+  const duelList=list.length?`<ol class="tb-duels">${list.map(([d,i])=>`<li>${name(d.w)} beat ${name(d.l)}<button data-tb-del="${i}">Remove</button></li>`).join("")}</ol>`:"";
+  let n=1;
+  const rows=result.ranked.flatMap(gp=>{
+    const label=gp.length>1?"Tied "+n:String(n);
+    n+=gp.length;
+    return gp.map(r=>`<tr><td>${label}</td><td>${name(r.team)}</td><td>${r.wins}</td></tr>`);
+  }).join("");
+  const note=result.resolved?(ctx.teams?"Decided. Tiebreak points: "+result.order.map((t,i)=>name(t)+" +"+(tied.length-1-i)).join(", ")+". They appear as a row on the leaderboard.":"The order is clear. Apply it to fill in the form."):result.valid.length?"Still tied: "+result.ranked.filter(gp=>gp.length>1).map(gp=>gp.map(r=>name(r.team)).join(" and ")).join("; ")+". Add more duels.":"Add each duel as it finishes. Most wins ranks first.";
+  return picker+setup+add+duelList+`<div class="table-wrap"><table><thead><tr><th>Order</th><th>Team</th><th>Duel wins</th></tr></thead><tbody>${rows}</tbody></table></div><p class="tb-note">${note}</p><div class="actions">${ctx.teams?"":`<button class="primary" data-tb-apply ${result.resolved?"":"disabled"}>Apply order</button>`}<button data-tb-reset>Clear duels</button></div>`;
+}
+function tieAlert() {
+  const board=standings();
+  if(board.finished!==games.length)return "";
+  const tied=groups(board.rows,r=>r.base,true).filter(gp=>gp.length>1);
+  if(!tied.length)return "";
+  return `<section class="panel tb-alert"><h2>Tie after all five games</h2>${tied.map(gp=>{
+    const done=gp.every(r=>typeof r.tb==="number");
+    return `<p><strong>${gp.map(r=>esc(r.name)).join(" and ")}</strong> are tied at ${gp[0].base} points. ${done?"The tiebreak is decided.":"Run the Guess the Name tiebreak."} <button data-tb-open="overall:${gp[0].base}">${done?"Review tiebreak":"Start tiebreak"}</button></p>`;
+  }).join("")}<p>The tiebreak adds a row to the tabulation. Only the teams that play it get points there, and the total decides the final rank.</p></section>`;
+}
+function tbOpen(id) {
+  tbCtx=id;
+  const details=document.querySelector("#tb-details");
+  if(details)details.open=true;
+  refreshTiebreak();
+  details?.scrollIntoView?.({behavior:"smooth",block:"start"});
+}
+function refreshTiebreak() {
+  const alertBox=document.querySelector("#tb-alert");
+  if(alertBox)alertBox.innerHTML=tieAlert();
+  const box=document.querySelector("#tiebreak");
+  if(!box)return;
+  const select=document.querySelector("#game-select");
+  box.innerHTML=tiebreakInner(select?Number(select.value):0);
+}
+function tbCurrent() {
+  const select=document.querySelector("#game-select");
+  const ctxs=tiebreakContexts(select?Number(select.value):0);
+  return ctxs.find(c=>c.id===tbCtx)??ctxs[0];
+}
+function tbUpdate(change) {
+  const ctx=tbCurrent();
+  const cur=data.tiebreaks?.[ctx.id]??{teams:[],place:0,duels:[]};
+  const next=change({teams:[...cur.teams],place:cur.place??0,duels:[...(cur.duels||[])]});
+  if(ctx.teams)next.teams=[...ctx.teams];
+  if(save({...data,tiebreaks:{...data.tiebreaks,[ctx.id]:next}}))refreshTiebreak();
+}
+function tbSetTeams() {
+  const picked=[...document.querySelectorAll(".tb-team:checked")].map(el=>Number(el.value));
+  tbUpdate(tb=>({...tb,teams:picked,duels:tb.duels.filter(d=>picked.includes(d.w)&&picked.includes(d.l)),place:Math.min(tb.place,Math.max(0,teams.length-picked.length))}));
+}
+function tbSetPlace(place) { tbUpdate(tb=>({...tb,place})); }
+function tbAdd() {
+  const w=Number(document.querySelector("#tb-winner")?.value), l=Number(document.querySelector("#tb-loser")?.value);
+  if(w===l){setStatus("Pick two different teams: one winner and one loser.");return;}
+  tbUpdate(tb=>({...tb,duels:[...tb.duels,{w,l}]}));
+}
+function tbDelete(index) { tbUpdate(tb=>({...tb,duels:tb.duels.filter((_,j)=>j!==index)})); }
+function tbReset() { tbUpdate(tb=>({...tb,duels:[]})); }
+function tbApply() {
+  const ctx=tbCurrent();
+  const tb=data.tiebreaks?.[ctx.id];
+  if(!tb)return;
+  const tied=ctx.teams??tb.teams;
+  const result=tiebreakOrder(tied,tb.duels);
+  if(tied.length<2||!result.resolved)return;
+  if(!ctx.teams) {
+    const place=Math.min(tb.place??0,Math.max(0,teams.length-tied.length));
+    const slots=points.slice(place,place+tied.length);
+    result.order.forEach((t,i)=>{const el=document.querySelector(`#tabulate [name="award${t}"]`);if(el)el.value=String(slots[i]);});
+    setStatus("Points filled in for the tied teams. Set the other teams, then press Publish game result.");
+  }
+}
+function tiebreakPrintRows(blank) {
+  const empty='<tr><td>&nbsp;</td><td></td><td></td><td></td></tr>';
+  if(blank)return empty+empty;
+  const rows=Object.entries(data.tiebreaks||{}).filter(([,tb])=>tb.duels?.length&&tb.teams?.length>1).map(([id,tb])=>{
+    const result=tiebreakOrder(tb.teams,tb.duels);
+    const label=id.startsWith("game:")?(games.find(g=>"game:"+g.id===id)?.name??id):"Overall, "+id.slice(8)+" points";
+    const duels=result.valid.map(d=>esc(teams[d.w])+" beat "+esc(teams[d.l])).join("; ");
+    const order=result.resolved?result.order.map(t=>esc(teams[t])).join(" > "):"Unresolved";
+    return `<tr><td>${esc(label)}</td><td>${tb.teams.map(t=>esc(teams[t])).join(", ")}</td><td>${duels}. Order: ${order}</td><td></td></tr>`;
+  });
+  return rows.length?rows.join(""):empty+empty;
+}
 document.addEventListener("click",event=>{
   const button=event.target.closest("button");
   if(!button)return;
@@ -555,6 +713,11 @@ document.addEventListener("click",event=>{
   if(button.dataset.print)printTabulation(button.dataset.print);
   if(button.hasAttribute("data-export"))downloadCSV();
   if(button.hasAttribute("data-lock")){unlocked=false;renderAdmin();}
+  if(button.dataset.tbOpen)tbOpen(button.dataset.tbOpen);
+  if(button.hasAttribute("data-tb-add"))tbAdd();
+  if(button.dataset.tbDel!==undefined)tbDelete(Number(button.dataset.tbDel));
+  if(button.hasAttribute("data-tb-reset"))tbReset();
+  if(button.hasAttribute("data-tb-apply"))tbApply();
   if(button.hasAttribute("data-present"))startPresent();
   if(button.hasAttribute("data-present-exit"))stopPresent();
 });
@@ -564,6 +727,9 @@ document.addEventListener("change",event=>{
     const value=event.target.value;
     if(save({...data,live:value===""?null:Number(value)}))setStatus(value===""?"The board shows no live round.":"The board now shows round "+(Number(value)+1)+" as live.");
   }
+  if(event.target.id==="tb-context"){tbCtx=event.target.value;refreshTiebreak();}
+  if(event.target.id==="tb-place")tbSetPlace(Number(event.target.value));
+  if(event.target.classList?.contains("tb-team"))tbSetTeams();
 });
 document.addEventListener("submit",async event=>{
   event.preventDefault();
