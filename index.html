@@ -238,6 +238,25 @@ body[data-view="menu"] header nav{display:none}
 .fund-sum div:last-child{border-color:var(--gold)}
 tr.void td{text-decoration:line-through;opacity:.55}
 tr.void td:last-child{text-decoration:none}
+
+body.admin-open[data-view="admin"] header nav,body.admin-open[data-view="games"] header nav,body.admin-open[data-view="funds"] header nav{display:none}
+
+body.admin-open[data-view="raffle"] header nav{display:none}
+.raffle-grid{display:grid;grid-template-columns:minmax(280px,1.2fr) minmax(260px,1fr);gap:1.5rem;align-items:start}
+.wheel-box{position:relative;width:min(100%,640px);margin:0 auto}
+#wheel{display:block;width:100%;height:auto}
+.wheel-pointer{position:absolute;top:-4px;left:50%;transform:translateX(-50%);z-index:2;border-left:16px solid transparent;border-right:16px solid transparent;border-top:32px solid var(--gold)}
+.raffle-count{margin:0 0 .6rem;color:var(--soft)}
+.winner{margin:.4rem 0 1rem;padding:1rem 1.2rem;background:var(--panel);border:1px solid var(--gold);border-left-width:5px;border-radius:.7rem}
+.winner small,.winner span{display:block;color:var(--soft)}
+.winner strong{display:block;font-size:clamp(1.8rem,4vw,3rem);line-height:1.15;color:var(--gold)}
+.chk{display:flex;align-items:center;gap:.5rem}.chk input{width:auto}
+.raffle-winners{padding-left:1.3rem;margin:.4rem 0}
+.raffle-winners li{margin:.25rem 0}
+@media(max-width:800px){.raffle-grid{grid-template-columns:1fr}}
+body.presenting .admin-nav{display:none}
+body.presenting .raffle-grid{grid-template-columns:minmax(0,1.4fr) minmax(260px,1fr)}
+body.presenting .wheel-box{width:min(88vh,100%)}
 </style>
 
 </head>
@@ -277,7 +296,7 @@ const stations = [
 const key = "christmas-countdown-event-v1";
 const main = document.querySelector("#main");
 const printArea = document.querySelector("#print");
-const empty = () => ({ pinHash:"", records:{}, overall:{}, live:null, tiebreaks:{}, roster:[], rosterLocked:false, itin:{cur:0}, funds:{in:[],out:[]} });
+const empty = () => ({ pinHash:"", records:{}, overall:{}, live:null, tiebreaks:{}, roster:[], rosterLocked:false, itin:{cur:0}, funds:{in:[],out:[]}, raffle:{winners:[],norepeat:true} });
 function load() {
   try { return {...empty(),...(JSON.parse(localStorage.getItem(key)) ?? {})}; }
   catch { return empty(); }
@@ -357,7 +376,7 @@ function video(file,name,options="") {
 }
 function view(name) {
   if(name!=="board"&&name!=="itinerary")stopPresent();
-  if((name==="games"||name==="funds")&&!unlocked)name="admin";
+  if((name==="games"||name==="funds"||name==="raffle")&&!unlocked)name="admin";
   currentView=name;
   document.body.dataset.view=name;
   document.querySelectorAll("nav button").forEach(button=>{
@@ -372,6 +391,7 @@ function view(name) {
   if(name==="teams")renderTeams();
   if(name==="itinerary")renderItin();
   if(name==="funds")renderFunds();
+  if(name==="raffle")renderRaffle();
   if(name==="admin")renderAdmin();
 }
 function landing(label,content,actions,accent) {
@@ -395,7 +415,7 @@ function renderMenu() {
     <button class="card" data-view="teams"><strong>Teams</strong><span>See who is on each team</span></button>
     <button class="card" data-view="itinerary"><strong>Itinerary</strong><span>Program flow, now and next</span></button>
     <button class="card" data-view="leaderboard"><strong>Leaderboard</strong><span>See team scores and standings</span></button>
-    <button class="card" data-view="admin"><strong>Admin</strong><span>Games, tabulation and funds (PIN)</span></button>
+    <button class="card" data-view="admin"><strong>Admin</strong><span>Games, tabulation, funds and raffle (PIN)</span></button>
   </div>`;
 }
 function renderGames() {
@@ -899,10 +919,10 @@ function renderItin() {
 /* ---- Surprise rule and admin nav ---- */
 const gameShown=i=>Boolean(data.records[games[i].id]?.published)||data.live===i||(unlocked&&!presenting);
 function tilesBlock() { return games.some((_,i)=>gameShown(i))?`<h2 class="tiles-title">Rounds</h2>${boardTiles()}`:""; }
-const adminNav=()=>`<nav class="admin-nav"><strong>Admin</strong><button data-view="admin">Tabulation</button><button data-view="games">Games</button><button data-view="funds">Pondo</button><button data-view="home">Replay intro</button></nav>`;
+const adminNav=()=>`<nav class="admin-nav"><strong>Admin</strong><button data-view="admin">Tabulation</button><button data-view="games">Games</button><button data-view="funds">Pondo</button><button data-view="raffle">Raffle</button><button data-view="home">Replay intro</button><button data-view="menu">Menu</button><button data-lock>Lock</button></nav>`;
 const _renderAdmin=renderAdmin, _renderGames=renderGames;
-renderAdmin=function(...a){_renderAdmin(...a);if(unlocked)main.insertAdjacentHTML("afterbegin",adminNav());};
-renderGames=function(...a){_renderGames(...a);if(unlocked)main.insertAdjacentHTML("afterbegin",adminNav());};
+renderAdmin=function(...a){_renderAdmin(...a);document.body.classList.toggle("admin-open",unlocked);if(unlocked)main.insertAdjacentHTML("afterbegin",adminNav());};
+renderGames=function(...a){_renderGames(...a);document.body.classList.toggle("admin-open",unlocked);if(unlocked)main.insertAdjacentHTML("afterbegin",adminNav());};
 /* ---- Pondo (funds) ---- */
 const peso=n=>"₱"+Number(n).toLocaleString("en-PH",{minimumFractionDigits:2,maximumFractionDigits:2});
 const fdate=t=>new Date(t).toLocaleString("en-PH",{dateStyle:"medium",timeStyle:"short"});
@@ -910,14 +930,14 @@ const fundsData=()=>data.funds||{in:[],out:[]};
 const fundSum=a=>a.filter(x=>!x.void).reduce((s,x)=>s+x.amt,0);
 function fundTable(kind,withVoid) {
   const list=fundsData()[kind];
-  const rows=list.map(x=>`<tr class="${x.void?"void":""}"><td>${fdate(x.t)}</td><td>${esc(kind==="in"?x.who:x.item)}${x.void?` <small>(void: ${esc(x.void)})</small>`:""}</td><td>${peso(x.amt)}</td>${withVoid?`<td>${x.void?"":`<button data-fund-void="${kind}:${x.id}">Void</button>`}</td>`:""}</tr>`).join("");
+  const rows=list.map(x=>`<tr class="${x.void?"void":""}"><td>${fdate(x.t)}</td><td>${esc(kind==="in"?x.who:x.item)}${x.void?` <small>(void: ${esc(x.void)})</small>`:""}</td><td>${peso(x.amt)}</td>${withVoid?`<td><button data-fund-edit="${kind}:${x.id}">Edit</button><button data-fund-del="${kind}:${x.id}">Delete</button></td>`:""}</tr>`).join("");
   return `<div class="table-wrap"><table><thead><tr><th>Date</th><th>${kind==="in"?"Name":"Item"}</th><th>Amount</th>${withVoid?"<th></th>":""}</tr></thead><tbody>${rows||'<tr><td colspan="4">Nothing yet</td></tr>'}</tbody><tfoot><tr><th colspan="2">Total</th><th>${peso(fundSum(list))}</th>${withVoid?"<th></th>":""}</tr></tfoot></table></div>`;
 }
 function renderFunds() {
   const f=fundsData(), inn=fundSum(f.in), out=fundSum(f.out);
-  const names=(data.roster||[]).map(p=>`<option value="${esc(p.name)}">`).join("");
-  const form=(kind,label)=>`<div class="tb-add"><label>${label}<input id="fin-${kind}-name" ${kind==="in"?'list="roster-names"':""} autocomplete="off"></label><label>Amount (₱)<input id="fin-${kind}-amt" type="number" min="0" step="0.01" inputmode="decimal"></label><button class="primary" data-fund-add="${kind}">Add</button></div>`;
-  main.innerHTML=`<h1>Pondo</h1><div class="fund-sum"><div><small>Collected</small><strong>${peso(inn)}</strong></div><div><small>Spent</small><strong>${peso(out)}</strong></div><div><small>Balance</small><strong>${peso(inn-out)}</strong></div></div><div class="actions"><button data-fund-print>Print report</button><button data-fund-csv>Download CSV</button></div><datalist id="roster-names">${names}</datalist><div class="funds-grid"><section class="panel"><h2>Collected</h2>${form("in","Name")}${fundTable("in",true)}</section><section class="panel"><h2>Expenses</h2>${form("out","Item")}${fundTable("out",true)}</section></div>`;
+  const form=(kind,label)=>`<div class="tb-add"><label>${label}<input id="fin-${kind}-name" autocomplete="off"></label><label>Amount (₱)<input id="fin-${kind}-amt" type="number" min="0" step="0.01" inputmode="decimal"></label><button class="primary" data-fund-add="${kind}">Add</button></div>`;
+  main.innerHTML=`<h1>Pondo</h1><div class="fund-sum"><div><small>Collected</small><strong>${peso(inn)}</strong></div><div><small>Spent</small><strong>${peso(out)}</strong></div><div><small>Balance</small><strong>${peso(inn-out)}</strong></div></div><div class="actions"><button data-fund-print>Print report</button><button data-fund-csv>Download CSV</button></div><div class="funds-grid"><section class="panel"><h2>Collected</h2>${form("in","Name")}${fundTable("in",true)}</section><section class="panel"><h2>Expenses</h2>${form("out","Item")}${fundTable("out",true)}</section></div>`;
+  document.body.classList.toggle("admin-open",unlocked);
   if(unlocked)main.insertAdjacentHTML("afterbegin",adminNav());
 }
 function addFund(kind) {
@@ -928,12 +948,21 @@ function addFund(kind) {
   const entry={id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),t:new Date().toISOString(),[kind==="in"?"who":"item"]:name,amt,void:null};
   if(save({...data,funds:{...f,[kind]:[...f[kind],entry]}}))renderFunds();
 }
-function voidFund(ref) {
+function editFund(ref) {
   const [kind,id]=ref.split(":");
-  const reason=prompt("Reason for voiding this entry?");
-  if(!reason||!reason.trim())return;
+  const f=fundsData(), x=f[kind].find(e=>e.id===id);
+  if(!x)return;
+  const name=prompt(kind==="in"?"Name":"Item",kind==="in"?x.who:x.item);
+  if(name===null||!name.trim())return;
+  const raw=prompt("Amount (₱)",x.amt);
+  const amt=Math.round(Number(raw)*100)/100;
+  if(raw===null||!(amt>0))return;
+  if(save({...data,funds:{...f,[kind]:f[kind].map(e=>e.id===id?{...e,[kind==="in"?"who":"item"]:name.trim(),amt}:e)}}))renderFunds();
+}
+function delFund(ref) {
+  const [kind,id]=ref.split(":");
   const f=fundsData();
-  if(save({...data,funds:{...f,[kind]:f[kind].map(x=>x.id===id?{...x,void:reason.trim()}:x)}}))renderFunds();
+  if(confirm("Delete this entry?")&&save({...data,funds:{...f,[kind]:f[kind].filter(e=>e.id!==id)}}))renderFunds();
 }
 function printFunds() {
   const f=fundsData(), inn=fundSum(f.in), out=fundSum(f.out);
@@ -950,6 +979,61 @@ function fundsCSV() {
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
+/* ---- Raffle wheel ---- */
+let raffleAngle=0, raffleSpinning=false;
+const raffleData=()=>data.raffle||{winners:[],norepeat:true};
+function rafflePool() {
+  const r=raffleData(), won=new Set(r.winners.map(w=>w.id));
+  return (data.roster||[]).filter(p=>r.norepeat===false||!won.has(p.id));
+}
+function drawWheel() {
+  const cv=document.querySelector("#wheel");
+  if(!cv)return;
+  const c=cv.getContext("2d"), S=cv.width, R=S/2, pool=rafflePool(), n=pool.length;
+  c.clearRect(0,0,S,S);
+  if(!n){c.fillStyle="#9fb3c8";c.font="30px system-ui";c.textAlign="center";c.fillText("No one in the pool",R,R);return;}
+  const cols=["#ffd37b","#80d8ff","#ff8a8a","#8ae6a8","#b69cff","#ff9d5c"], step=2*Math.PI/n;
+  pool.forEach((p,i)=>{
+    const a0=raffleAngle+i*step;
+    c.beginPath();c.moveTo(R,R);c.arc(R,R,R-6,a0,a0+step);c.closePath();
+    c.fillStyle=cols[i%cols.length];c.fill();c.strokeStyle="#091d31";c.lineWidth=1;c.stroke();
+    c.save();c.translate(R,R);c.rotate(a0+step/2);
+    c.fillStyle="#091d31";c.textAlign="right";c.textBaseline="middle";
+    c.font="600 "+Math.max(9,Math.min(24,Math.floor(R*step*0.5)))+"px system-ui";
+    c.fillText(p.name.slice(0,16),R-20,0);c.restore();
+  });
+  c.beginPath();c.arc(R,R,24,0,2*Math.PI);c.fillStyle="#091d31";c.fill();
+}
+function renderRaffle() {
+  const r=raffleData(), pool=rafflePool(), last=r.winners[r.winners.length-1];
+  main.innerHTML=`<div class="raffle"><h1>Raffle</h1><div class="raffle-grid"><div class="wheel-box"><div class="wheel-pointer" aria-hidden="true"></div><canvas id="wheel" width="760" height="760" role="img" aria-label="Raffle wheel with ${pool.length} names"></canvas></div><div class="raffle-side"><p class="raffle-count">${pool.length} in the pool</p>${last?`<div class="winner"><small>Latest winner${last.prize?" · "+esc(last.prize):""}</small><strong>${esc(last.name)}</strong><span>${esc(last.dept||"")}</span></div>`:""}<label>Prize (optional)<input id="raffle-prize" autocomplete="off"></label><label class="chk"><input type="checkbox" id="raffle-norepeat" ${r.norepeat!==false?"checked":""}> A person can win only once</label><div class="actions"><button class="primary" data-raffle-spin>Spin</button><button data-present>Full screen</button><button data-raffle-reset>Reset raffle</button></div><h2>Winners</h2><ol class="raffle-winners">${r.winners.map(w=>`<li><strong>${esc(w.name)}</strong> <small>${esc(w.dept||"")}${w.prize?" · "+esc(w.prize):""}</small></li>`).join("")||"<li><small>None yet</small></li>"}</ol></div></div><button class="present-exit" data-present-exit>Exit full screen</button></div>`;
+  document.body.classList.toggle("admin-open",unlocked);
+  if(unlocked)main.insertAdjacentHTML("afterbegin",adminNav());
+  drawWheel();
+}
+function spinRaffle() {
+  const pool=rafflePool(), n=pool.length;
+  if(raffleSpinning||!n)return;
+  raffleSpinning=true;
+  const i=Math.floor(Math.random()*n), step=2*Math.PI/n, turn=2*Math.PI;
+  const prize=document.querySelector("#raffle-prize")?.value.trim()||"";
+  const target=-Math.PI/2-(i+.5+(Math.random()-.5)*.7)*step;
+  const delta=(((target-raffleAngle)%turn)+turn)%turn+turn*(5+Math.floor(Math.random()*3));
+  const start=raffleAngle, t0=performance.now(), dur=5500;
+  const frame=now=>{
+    const t=Math.min(1,(now-t0)/dur);
+    raffleAngle=start+delta*(1-Math.pow(1-t,3));
+    drawWheel();
+    if(t<1){requestAnimationFrame(frame);return;}
+    raffleSpinning=false;
+    const p=pool[i], r=raffleData();
+    if(save({...data,raffle:{...r,winners:[...r.winners,{id:p.id,name:p.name,dept:p.dept,prize,t:new Date().toISOString()}]}}))renderRaffle();
+  };
+  requestAnimationFrame(frame);
+}
+function resetRaffle() {
+  if(raffleData().winners.length&&confirm("Clear all raffle winners?")&&save({...data,raffle:{...raffleData(),winners:[]}}))renderRaffle();
+}
 document.addEventListener("click",event=>{
   const button=event.target.closest("button");
   if(!button)return;
@@ -960,8 +1044,11 @@ document.addEventListener("click",event=>{
   if(button.dataset.print)printTabulation(button.dataset.print);
   if(button.hasAttribute("data-export"))downloadCSV();
   if(button.hasAttribute("data-lock")){unlocked=false;renderAdmin();}
+  if(button.hasAttribute("data-raffle-spin"))spinRaffle();
+  if(button.hasAttribute("data-raffle-reset"))resetRaffle();
   if(button.dataset.fundAdd)addFund(button.dataset.fundAdd);
-  if(button.dataset.fundVoid)voidFund(button.dataset.fundVoid);
+  if(button.dataset.fundEdit)editFund(button.dataset.fundEdit);
+  if(button.dataset.fundDel)delFund(button.dataset.fundDel);
   if(button.hasAttribute("data-fund-print"))printFunds();
   if(button.hasAttribute("data-fund-csv"))fundsCSV();
   if(button.dataset.edit)editPerson(button.dataset.edit);
@@ -995,6 +1082,7 @@ document.addEventListener("change",event=>{
     const v=event.target.value,id=event.target.dataset.move;
     if(save({...data,roster:data.roster.map(p=>p.id===id?{...p,team:v===""?null:Number(v)}:p)}))renderTeams();
   }
+  if(event.target.id==="raffle-norepeat"&&save({...data,raffle:{...raffleData(),norepeat:event.target.checked}}))renderRaffle();
   if(event.target.id==="restore-file")restoreBackup(event.target.files[0]);
   if(event.target.id==="tb-context"){tbCtx=event.target.value;refreshTiebreak();}
   if(event.target.id==="tb-place")tbSetPlace(Number(event.target.value));
